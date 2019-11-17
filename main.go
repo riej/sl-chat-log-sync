@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"sync"
 
 	"github.com/cheggaaa/pb/v3"
 	"github.com/logrusorgru/aurora"
@@ -65,30 +66,49 @@ func main() {
 	fileNames := UniqueLines(append(fileNames1, fileNames2...))
 	bar := pb.StartNew(len(fileNames))
 
-	for _, fileName := range fileNames {
-		file1, err := ReadChatLog(filepath.Join(slDataPath, fileName))
-		if err != nil {
-			DisplayErrorAndExit(err)
+	worker := func(filenames <-chan string, wg *sync.WaitGroup) {
+		for fileName := range filenames {
+			file1, err := ReadChatLog(filepath.Join(slDataPath, fileName))
+			if err != nil {
+				DisplayErrorAndExit(err)
+			}
+
+			file2, err := ReadChatLog(filepath.Join(backupPath, fileName))
+			if err != nil {
+				DisplayErrorAndExit(err)
+			}
+
+			merged := append(file1, file2...)
+			sort.Stable(merged)
+			merged = merged.Unique()
+
+			if err := merged.WriteFile(filepath.Join(slDataPath, fileName)); err != nil {
+				DisplayErrorAndExit(err)
+			}
+
+			if err := merged.WriteFile(filepath.Join(backupPath, fileName)); err != nil {
+				DisplayErrorAndExit(err)
+			}
+
+			bar.Increment()
 		}
 
-		file2, err := ReadChatLog(filepath.Join(backupPath, fileName))
-		if err != nil {
-			DisplayErrorAndExit(err)
-		}
-
-		merged := append(file1, file2...)
-		sort.Stable(merged)
-		merged = merged.Unique()
-
-		if err := merged.WriteFile(filepath.Join(slDataPath, fileName)); err != nil {
-			DisplayErrorAndExit(err)
-		}
-
-		if err := merged.WriteFile(filepath.Join(backupPath, fileName)); err != nil {
-			DisplayErrorAndExit(err)
-		}
-
-		bar.Increment()
+		wg.Done()
 	}
+
+	jobs := make(chan string, len(fileNames))
+	var wg sync.WaitGroup
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go worker(jobs, &wg)
+	}
+
+	for _, fileName := range fileNames {
+		jobs <- fileName
+	}
+	close(jobs)
+
+	wg.Wait()
 	bar.Finish()
 }
