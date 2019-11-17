@@ -4,15 +4,20 @@ import (
 	"bufio"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-type ChatLine struct {
+type ChatLinesChunk struct {
 	Timestamp int64
-	Text      string
+	ChatLines []string
 }
 
-type ChatLog []ChatLine
+func (chunk ChatLinesChunk) Text() string {
+	return strings.Join(chunk.ChatLines, "")
+}
+
+type ChatLog []*ChatLinesChunk
 
 func (log ChatLog) Len() int {
 	return len(log)
@@ -38,7 +43,10 @@ func ReadChatLog(Filename string) (log ChatLog, err error) {
 
 	defer file.Close()
 
-	var lastTimestamp int64 = 0
+	chunk := &ChatLinesChunk{
+		Timestamp: 0,
+		ChatLines: make([]string, 0),
+	}
 
 	reader := bufio.NewReader(file)
 	for {
@@ -49,16 +57,19 @@ func ReadChatLog(Filename string) (log ChatLog, err error) {
 
 		if s[0] == '[' && s[17] == ']' {
 			t, err := time.Parse("2006/01/02 15:04", s[1:17])
-			if err == nil {
-				lastTimestamp = t.Unix()
+			if err == nil && t.Unix() != chunk.Timestamp {
+				log = append(log, chunk)
+				chunk = &ChatLinesChunk{
+					Timestamp: t.Unix(),
+					ChatLines: make([]string, 0),
+				}
 			}
 		}
 
-		log = append(log, ChatLine{
-			Timestamp: lastTimestamp,
-			Text:      s,
-		})
+		chunk.ChatLines = append(chunk.ChatLines, s)
 	}
+
+	log = append(log, chunk)
 
 	return log, nil
 }
@@ -66,18 +77,22 @@ func ReadChatLog(Filename string) (log ChatLog, err error) {
 func (log ChatLog) Unique() (result ChatLog) {
 	result = make(ChatLog, 0)
 
-	var lastTimestamp int64 = 0
-	var lines map[string]bool = make(map[string]bool)
-
-	for _, line := range log {
-		if line.Timestamp != lastTimestamp {
-			lines = make(map[string]bool)
-			lastTimestamp = line.Timestamp
+	timestamps := make([]int64, 0)
+	chunks := make(map[int64]*ChatLinesChunk)
+	for _, chunk := range log {
+		if existing, ok := chunks[chunk.Timestamp]; ok {
+			if len(chunk.Text()) > len(existing.Text()) {
+				chunks[chunk.Timestamp] = chunk
+			}
+		} else {
+			timestamps = append(timestamps, chunk.Timestamp)
+			chunks[chunk.Timestamp] = chunk
 		}
+	}
 
-		if _, ok := lines[line.Text]; !ok {
-			lines[line.Text] = true
-			result = append(result, line)
+	for _, timestamp := range timestamps {
+		if chunk, ok := chunks[timestamp]; ok {
+			result = append(result, chunk)
 		}
 	}
 
@@ -97,8 +112,8 @@ func (log ChatLog) WriteFile(fname string) (err error) {
 	defer f.Close()
 
 	w := bufio.NewWriter(f)
-	for _, line := range log {
-		if _, err = w.WriteString(line.Text); err != nil {
+	for _, chunk := range log {
+		if _, err = w.WriteString(chunk.Text()); err != nil {
 			return err
 		}
 	}

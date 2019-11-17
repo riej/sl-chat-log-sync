@@ -39,9 +39,6 @@ func UniqueLines(lines []string) []string {
 }
 
 func main() {
-	fmt.Println(GetSLDataPath())
-	fmt.Println(GetBackupPath())
-
 	slDataPath, err := GetSLDataPath()
 	if err != nil {
 		DisplayErrorAndExit(err)

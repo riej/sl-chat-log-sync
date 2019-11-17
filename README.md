@@ -13,6 +13,4 @@ Lookup folders:
 -   Linux: ~/.secondlife
 -   MacOS: ~/Library/Application Support/SecondLife
 
-**WARNING! Lines with same timestamp and content will be removed!**
-
 Application is not properly tested yet, please use it with care and don't expect too much from it. **No warranty in case of data lost.**
