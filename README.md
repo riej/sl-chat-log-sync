@@ -6,11 +6,12 @@ How to use:
 3. Move to your laptop and repeat.
 4. Have same chat logs on both devices!
 
-It creates directory "SecondLife_backup" in current working directory (if it doesn't exists), and stores SL chat logs here.
+It creates file "sl_chat_logs.zip" in current working directory (if it doesn't exists), and stores SL chat logs here.
 
-Lookup folders:
--   Windows: %APPDATA%\Roaming\SecondLife
--   Linux: ~/.secondlife
--   MacOS: ~/Library/Application Support/SecondLife
+Supported SecondLife clients:
+- SecondLife (official);
+- Firestorm;
+- Kokua;
+- Marine's RLV client.
 
 Application is not properly tested yet, please use it with care and don't expect too much from it. **No warranty in case of data lost.**

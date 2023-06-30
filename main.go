@@ -1,114 +1,156 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"sort"
-	"sync"
 
 	"github.com/cheggaaa/pb/v3"
-	"github.com/logrusorgru/aurora"
 )
 
-func DisplayErrorAndExit(err error) {
-	fmt.Println(aurora.Red("Error:"), err)
+var (
+	ArchiveOnly     = flag.Bool("archive-only", false, "don't replace existing chat log files, archive only")
+	ArchiveFileName = flag.String("archive", "sl_chat_logs.zip", "Archive file name")
+)
 
-	switch runtime.GOOS {
-	case "windows":
-		exec.Command("pause").Run()
-		break
-	default:
-	}
-	os.Exit(1)
-}
+func main() {
+	flag.Parse()
 
-func UniqueLines(lines []string) []string {
-	mLines := make(map[string]bool)
-	result := make([]string, 0)
+	var inputStorages []ChatLogsStorage
 
-	for _, line := range lines {
-		if _, ok := mLines[line]; !ok {
-			mLines[line] = true
-			result = append(result, line)
+	// Check each SecondLife client.
+	for _, clientApp := range SecondLifeClients {
+		directory, err := clientApp.GetDirectory()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s detection error, skipping it: %s\n", clientApp, err)
+			continue
+		}
+
+		exists, err := IsDirectoryExists(directory)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s detection error, skipping it: %s\n", clientApp, err)
+			continue
+		}
+
+		if exists {
+			fmt.Printf("%s found\n", clientApp)
+
+			clientApp := clientApp
+			inputStorages = append(inputStorages, &clientApp)
 		}
 	}
 
-	return result
-}
-
-func main() {
-	slDataPath, err := GetSLDataPath()
-	if err != nil {
-		DisplayErrorAndExit(err)
+	if len(inputStorages) == 0 {
+		fmt.Printf("No SecondLife clients found.\n")
+		os.Exit(0)
+		return
 	}
 
-	backupPath, err := GetBackupPath()
+	// Open archives.
+	archive, err := ReadChatLogsArchive(*ArchiveFileName)
 	if err != nil {
-		DisplayErrorAndExit(err)
+		fmt.Fprintf(os.Stderr, "%s error, skipping it: %s\n", *ArchiveFileName, err)
+		os.Exit(1)
+		return
 	}
 
-	fileNames1, err := filepath.Glob(filepath.Join(slDataPath, "*", "*.txt"))
-	if err != nil {
-		DisplayErrorAndExit(err)
+	inputStorages = append(inputStorages, archive)
+	defer func() {
+		err := archive.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
+			os.Exit(1)
+			return
+		}
+	}()
+
+	var outputStorages []ChatLogsStorage
+	if *ArchiveOnly {
+		outputStorages = []ChatLogsStorage{archive}
+	} else {
+		outputStorages = inputStorages
 	}
 
-	fileNames2, err := filepath.Glob(filepath.Join(backupPath, "*", "*.txt"))
-	if err != nil {
-		DisplayErrorAndExit(err)
+	// Retrieve all account names.
+	var accountNames []string
+
+	for _, storage := range inputStorages {
+		storageAccountNames, err := storage.GetAccountNames()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
+			os.Exit(1)
+			return
+		}
+
+		accountNames = append(accountNames, storageAccountNames...)
 	}
 
-	fileNames1 = RemovePathPrefix(slDataPath, fileNames1)
-	fileNames2 = RemovePathPrefix(backupPath, fileNames2)
+	accountNames = Unique(accountNames)
+	sort.Strings(accountNames)
 
-	fileNames := UniqueLines(append(fileNames1, fileNames2...))
-	bar := pb.StartNew(len(fileNames))
+	if len(accountNames) == 0 {
+		fmt.Printf("No SecondLife accounts found.\n")
+		os.Exit(0)
+		return
+	}
 
-	worker := func(filenames <-chan string, wg *sync.WaitGroup) {
-		for fileName := range filenames {
-			file1, err := ReadChatLog(filepath.Join(slDataPath, fileName))
+	fmt.Printf("Accounts found:\n")
+	for _, accountName := range accountNames {
+		fmt.Printf(" - %s\n", accountName)
+	}
+
+	// Read all chat logs and merge them.
+	for _, accountName := range accountNames {
+		fmt.Printf("Merging %s chat logs...\n", accountName)
+
+		var chatLogsFileNames []string
+		for _, storage := range inputStorages {
+			_, fileNames, err := storage.ListChatLogFileNames(accountName)
 			if err != nil {
-				DisplayErrorAndExit(err)
+				fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
+				os.Exit(1)
+				return
 			}
 
-			file2, err := ReadChatLog(filepath.Join(backupPath, fileName))
-			if err != nil {
-				DisplayErrorAndExit(err)
+			chatLogsFileNames = append(chatLogsFileNames, fileNames...)
+		}
+
+		chatLogsFileNames = Unique(chatLogsFileNames)
+		sort.Strings(chatLogsFileNames)
+
+		bar := pb.StartNew(len(chatLogsFileNames))
+
+		for _, fileName := range chatLogsFileNames {
+			var chatLogs []Messages
+
+			for _, storage := range inputStorages {
+				messages, err := storage.ReadChatLog(accountName, fileName)
+				if err != nil {
+					bar.Finish()
+					fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
+					os.Exit(1)
+					return
+				}
+
+				chatLogs = append(chatLogs, messages)
 			}
 
-			merged := append(file1, file2...)
-			sort.Stable(merged)
-			merged = merged.Unique()
+			merged := Merge(chatLogs...)
 
-			if err := merged.WriteFile(filepath.Join(slDataPath, fileName)); err != nil {
-				DisplayErrorAndExit(err)
-			}
-
-			if err := merged.WriteFile(filepath.Join(backupPath, fileName)); err != nil {
-				DisplayErrorAndExit(err)
+			for _, storage := range outputStorages {
+				err := storage.WriteChatLog(accountName, fileName, merged)
+				if err != nil {
+					bar.Finish()
+					fmt.Fprintf(os.Stderr, "error: %s\n", err.Error())
+					os.Exit(1)
+					return
+				}
 			}
 
 			bar.Increment()
 		}
 
-		wg.Done()
+		bar.Finish()
 	}
-
-	jobs := make(chan string, len(fileNames))
-	var wg sync.WaitGroup
-
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go worker(jobs, &wg)
-	}
-
-	for _, fileName := range fileNames {
-		jobs <- fileName
-	}
-	close(jobs)
-
-	wg.Wait()
-	bar.Finish()
 }
